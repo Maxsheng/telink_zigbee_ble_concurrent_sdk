@@ -1,0 +1,169 @@
+name: Telink_TL32_CMake_Build
+
+# on: [push, pull_request]
+on: 
+  workflow_dispatch:
+    inputs:
+      cproject:
+        description: |
+          'Select the compiled project, cproject path'
+          './telink_zigbee_ble_concurrent/build/iot_riscv_b92/.cproject'
+        required: true
+        default: './telink_zigbee_ble_concurrent/build/iot_riscv_b92/.cproject'
+      target:
+        description: |
+          'Select the compiled configuration'
+          'concurrent_sampleLight_b92'
+        required: true
+        default: 'concurrent_sampleLight_b92'
+
+jobs:
+  Linux_CMake_Convert:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: check parameters
+      run: |
+        echo "cproject ${{ github.event.inputs.cproject }}"
+        echo "target ${{ github.event.inputs.target }}"
+
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Restore Cached Toolchain
+      id: Restore_Cached_Toolchain
+      uses: actions/cache@v4
+      with:
+        path: |
+          cdt2cmake_Linux_X64
+          V512f_Linux_X64
+        key: ${{ runner.os }}-toolchain-
+        restore-keys: |
+          ${{ runner.os }}-toolchain-D25F-GCC10
+     
+    - if: ${{ steps.Restore_Cached_Toolchain.outputs.cache-hit != 'true' }}
+      name: download and decompression toolchain
+      run: |
+        curl -o V512f_Linux_X64.tar.xz https://wiki.telink-semi.cn/tools_and_sdk/others/toolchains/V512f_Linux_X64.tar.xz
+        tar -xvf V512f_Linux_X64.tar.xz
+        if [ $? != 0 ]; then
+          echo "download toolchain fail"
+          exit 1
+        fi
+        ls V512f_Linux_X64
+        
+        
+        curl -o cdt2cmake_Linux_X64.tar.xz https://wiki.telink-semi.cn/tools_and_sdk/others/cdt2cmake_Linux_X64_0.4.7.tar.xz
+        tar -xvf cdt2cmake_Linux_X64.tar.xz
+        if [ $? != 0 ]; then
+          echo "download cdt2cmake fail"
+          exit 1
+        fi
+        ls cdt2cmake_Linux_X64_0.4.7
+        
+    - if: ${{ steps.Restore_Cached_Toolchain.outputs.cache-hit != 'true' }}
+      name: Cache Toolchain
+      uses: actions/cache@v4
+      with:
+        path: |
+          cdt2cmake_Linux_X64
+          V512f_Linux_X64
+          
+        key: ${{ runner.os }}-toolchain-D25F-GCC10
+
+    - name: convert cdt2cmake
+      run: |
+        echo "convert cdt2cmake"
+        ./cdt2cmake_Linux_X64/cdt2cmake.dist/cdt2cmake.bin ${{ github.event.inputs.cproject }} -i
+        find . -name "CMakeLists.txt"
+    # - name: cmake build
+    #   run: |
+    #     echo "cmake building..."
+    #     ls
+    #     cmake ./b85_ble_sdk -Bcmake_build -DTOOLCHAIN_PATH="`pwd`/tc32"
+    #     echo "parameter_name ${{ github.event.inputs.target }}"
+    #     cmake --build cmake_build --target "${{ github.event.inputs.target }}" -j16
+
+    - name: upload cmake artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: cmake-files
+        path: |
+          ./**/CMakeLists.txt
+        retention-days: 1
+
+  Linux_CMake_build:
+    runs-on: ubuntu-latest
+    needs: Linux_CMake_Convert
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+    - name: check parameters
+      run: |
+        echo "cproject ${{ github.event.inputs.cproject }}"
+        echo "target ${{ github.event.inputs.target }}"
+
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Download and extract CMakeLists.txt files
+      uses: actions/download-artifact@v4
+      with:
+        name: cmake-files
+        path: .
+
+    - name: Restore Cached Toolchain
+      id: Restore_Cached_Toolchain
+      uses: actions/cache@v4
+      with:
+        path: |
+          # cdt2cmake
+          tc32
+        key: ${{ runner.os }}-toolchain-tc32
+        restore-keys: |
+          ${{ runner.os }}-toolchain-tc32
+     
+    - if: ${{ steps.Restore_Cached_Toolchain.outputs.cache-hit != 'true' }}
+      name: download and decompression toolchain
+      env:
+        SHELL: bash
+      shell: bash
+      run: |
+        curl -o tc32.zip "https://wiki.telink-semi.cn/tools_and_sdk/others/toolchains/tc32(1.3.0)_windows_X64.zip"
+        unzip tc32.zip
+        if [ $? != 0 ]; then
+          echo "download toolchain fail"
+          exit 1
+        fi
+        ls
+         
+    - if: ${{ steps.Restore_Cached_Toolchain.outputs.cache-hit != 'true' }}
+      name: Cache Toolchain
+      uses: actions/cache@v4
+      with:
+        path: |
+          # cdt2cmake
+          tc32
+        key: ${{ runner.os }}-toolchain-tc32
+
+    - name: cmake build
+      shell: bash
+      run: |
+        echo "cmake building..."
+        export PATH=$PATH:"$(pwd)/tc32/bin"
+        find . -type f -name "*.sh" -exec chmod +x {} \;
+        sed -i 's/\$2\.elf/\$1/g' b85_ble_sdk/tl_check_fw.sh
+        cmake --version
+        cmake b85_ble_sdk -Bb85_ble_sdk/cmake_build -G "Unix Makefiles"  -DTOOLCHAIN_PATH=$(pwd)/tc32 -DCMAKE_C_STANDARD_LIBRARIES="" -DCMAKE_CXX_STANDARD_LIBRARIES="" -DCMAKE_C_COMPILER_FORCED=TRUE -DCMAKE_CXX_COMPILER_FORCED=TRUE 
+        echo "parameter_name ${{ github.event.inputs.target }}"
+        cmake --build b85_ble_sdk/cmake_build --target "${{ github.event.inputs.target }}" -j16
+
+    - name: upload cmake output artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: cmake-bin-files
+        path: |
+          b85_ble_sdk/cmake_build/${{ github.event.inputs.target }}*
+        retention-days: 1
